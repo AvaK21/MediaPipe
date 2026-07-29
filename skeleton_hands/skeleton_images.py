@@ -1,6 +1,7 @@
 import os
 import cv2
 import time
+import uuid
 from collections import namedtuple
 import mediapipe as mp
 from mediapipe.tasks import python
@@ -139,8 +140,12 @@ def main():
             if latest_result[0] is not None and latest_result[0].hand_landmarks:
                 for hand_landmarks in latest_result[0].hand_landmarks:
                     draw_landmarks(frame, hand_landmarks)
-
-
+            # Will save every frame to the Output_Images folder with a unique name based on a UUID. This is useful for debugging and analysis, but can fill up disk space quickly if left running for a long time.
+            cv2.imwrite(
+                os.path.join(BASE_PATH, "Output_Images",
+                             "hand_landmarker_result_{}.jpg".format(uuid.uuid1())),
+                             frame
+            )
             cv2.imshow("Hand Tracking", frame)
 
             

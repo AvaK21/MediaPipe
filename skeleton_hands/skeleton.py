@@ -1,6 +1,7 @@
 import os
 import cv2
 import time
+import uuid
 from collections import namedtuple
 import mediapipe as mp
 from mediapipe.tasks import python
@@ -93,7 +94,7 @@ def main():
         num_hands=2, #max number of hands to detect, default is 1
         min_hand_detection_confidence=0.5, #minimum confidence for hand detection, default is 0.5
         min_hand_presence_confidence=0.5, #minimum confidence for hand presence, default is 0.5
-        min_tracking_confidence=0.5, #minimum confidence for hand tracking, default is 0.5
+        min_tracking_confidence=0.7, #minimum confidence for hand tracking, default is 0.5
     )
 
 
@@ -139,7 +140,6 @@ def main():
             if latest_result[0] is not None and latest_result[0].hand_landmarks:
                 for hand_landmarks in latest_result[0].hand_landmarks:
                     draw_landmarks(frame, hand_landmarks)
-
 
             cv2.imshow("Hand Tracking", frame)
 
