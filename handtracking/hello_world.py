@@ -9,7 +9,7 @@ from mediapipe.tasks.python import vision
 # and previous work I have done with the MediaPipe Gesture Recognizer
 
 BASE_PATH = os.path.dirname(os.path.abspath(__file__))
-MODEL_PATH = os.path.join(BASE_PATH,"..","hand_landmarker.task")
+MODEL_PATH = os.path.join(BASE_PATH,"..","Models", "hand_landmarker.task")
 
 
 BaseOptions = mp.tasks.BaseOptions

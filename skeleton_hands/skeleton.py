@@ -7,13 +7,14 @@ import mediapipe as mp
 from mediapipe.tasks import python
 from mediapipe.tasks.python import vision
 
-#Look up python naming conventions next and then finish the video
+#LLook up the gesture model math if that is available. 
 
 # Based on the Hand Landmarker example from the MediaPipe documentation: https://developers.google.com/mediapipe/solutions/vision/hand_landmarker/python
+# and legacy solutions tutorial, and AI
 # and previous work I have done with the MediaPipe Gesture Recognizer
 
 BASE_PATH = os.path.dirname(os.path.abspath(__file__))
-MODEL_PATH = os.path.join(BASE_PATH,"..","hand_landmarker.task")
+MODEL_PATH = os.path.join(BASE_PATH,"..","Models", "hand_landmarker.task")
 
 
 BaseOptions = mp.tasks.BaseOptions
