@@ -27,6 +27,7 @@ import cv2
 import time
 import numpy as np
 import mediapipe as mp
+import math
 from mediapipe.tasks.python.vision.hand_landmarker import HandLandmark, HandLandmarksConnections
 
 #LLook up the gesture model math if that is available. 
@@ -114,7 +115,7 @@ def draw_angles(frame, hand_landmark, joint_list):
         pt = (int(hand_landmark[b].x * w), int(hand_landmark[b].y * h))
         cv2.putText(frame, f"{angle:.0f}", pt, cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 200), 2, cv2.LINE_AA)
 
-def draw_extended_fingers(frame, hand_landmark, hand_label):
+def is_extended_fingers( hand_landmark, hand_label):
     extended_fingers = []
 
     # Check each finger (index, middle, ring, pinky)
@@ -124,14 +125,120 @@ def draw_extended_fingers(frame, hand_landmark, hand_label):
             hand_landmark[finger - 1],  # DIP joint
             hand_landmark[finger]       # Tip
         )
-        if angle > EXTENED_FINGER_THRESHOLD:  # Threshold for extended finger
+        dot = get_dot_product(hand_landmark[HandLandmark.WRIST], hand_landmark[finger - 2], hand_landmark[finger])
+        print(f"Finger {finger}: Angle = {angle:.2f}, Dot Product = {dot:.2f}")
+        if dot < 0 and angle > EXTENED_FINGER_THRESHOLD:  # Threshold for extended finger
             extended_fingers.append(True)
         else:
             extended_fingers.append(False)
+    thumb =thumb_extended_check(hand_landmark, hand_label)
+    extended_fingers.append(thumb)
+
     print(f"Extended fingers for {hand_label}: {extended_fingers}")
+    return extended_fingers
+
+def count_extended_fingers(extended_fingers: list) -> int:
+    if extended_fingers is None:
+        return 0
+    #Normailze to list of lists
+    if not isinstance(extended_fingers[0], list):
+        extended_fingers = [extended_fingers]
+    num_extended = sum(1 for hand in extended_fingers for extended in hand if extended)
+    return num_extended
+
+
+def draw_num_extended_fingers(frame, num_extended) -> None:
+
+
+    text = f"Count: {num_extended}"
+    print(num_extended)
+
+    cv2.putText(frame, text, (250,50), cv2.FONT_HERSHEY_SIMPLEX, 1, (200,0,200), cv2.LINE_AA)
+
+
 
 def flip_hand_name(name:str) -> str:
     return "Right" if name == "Left" else "Left"
+
+def get_dot_product(a,b,c):
+    """
+    a: handlamrtk. enum
+    b: handlamrtk. enum
+    c: handlamrtk. enum
+    returns the dot product of the two vectors, which is a measure of how much they point in the same direction.
+
+    Ex: Wrist to DIP of a finger, and DIP to TIP of the same finger. If the dot product is positive...
+    """
+    a = np.array([a.x, a.y])
+    b = np.array([b.x, b.y])
+    c = np.array([c.x, c.y])
+
+    # make b the origin of the vectors by subtracting b from a and c
+    ba = a - b
+    bc = c -b
+
+    return np.dot(ba, bc) 
+
+
+def is_palm_facing_camera(hand_landmark, hand_label):
+    """
+    Infer palm direction from landmark winding order.
+    Returns True if palm is facing camera.
+    """
+    mid    = np.array([hand_landmark[HandLandmark.MIDDLE_FINGER_MCP].x, hand_landmark[HandLandmark.MIDDLE_FINGER_MCP].y]) 
+    wrist  = np.array([hand_landmark[HandLandmark.WRIST].x, hand_landmark[HandLandmark.WRIST].y]) 
+    pinky  = np.array([hand_landmark[HandLandmark.PINKY_MCP].x, hand_landmark[HandLandmark.PINKY_MCP].y])
+
+    cross = np.cross(mid - wrist, pinky - wrist)
+
+    if cross == 0:
+        return False  # Palm is not facing camera if the cross product is zero
+
+    if hand_label == "Right":
+        return cross > 0
+    else:
+        return cross < 0
+    
+def thumb_extended_check(hand_landmark, hand_label):
+    index_mcp = np.array([hand_landmark[HandLandmark.INDEX_FINGER_MCP].x, hand_landmark[HandLandmark.INDEX_FINGER_MCP].y])
+    thumb_mcp = np.array([hand_landmark[HandLandmark.THUMB_MCP].x, hand_landmark[HandLandmark.THUMB_MCP].y])
+    thumb_tip = np.array([hand_landmark[HandLandmark.THUMB_TIP].x, hand_landmark[HandLandmark.THUMB_TIP].y])
+
+    cross = np.cross( index_mcp - thumb_mcp, thumb_tip - thumb_mcp)
+
+
+    palm_facing = is_palm_facing_camera(hand_landmark, hand_label)
+
+    if cross == 0 or palm_facing is None:
+        return False  # Thumb is not extended if the cross product is zero or palm is not facing camera
+
+    if hand_label == "Right":
+        expected_sign = cross < 0
+    else:
+        expected_sign = cross > 0
+
+    # Flip logic if palm is facing away
+    if not palm_facing:
+        expected_sign = not expected_sign
+    result = bool(expected_sign)
+    return result
+
+
+
+
+def distance(a,b):
+    """
+    a: handlamrtk. enum
+    b: handlamrtk. enum
+
+    returns: the distance between two points in 2D space. Euclidean distance is calculated using numpy's linear algebra norm function.
+    Is the same as math.sqrt((a[0]-b[0])**2 + (a[1]-b[1])**2) but more efficient and concise.
+    """
+    a = np.array([a.x, a.y])
+    b = np.array([b.x, b.y])
+    return np.linalg.norm(a - b)
+
+
 def main():
     #nonlocal variable to store the latest result from the hand landmarker. It is mutable so that it can be updated in the callback function.
     latest_result = None
@@ -147,7 +254,7 @@ def main():
         running_mode=VisionRunningMode.LIVE_STREAM, # Mode
         result_callback=on_detection_result, #Function to call when a result is available
         num_hands=2, #max number of hands to detect, default is 1
-        min_hand_detection_confidence=0.5, #minimum confidence for hand detection, default is 0.5
+        min_hand_detection_confidence=0.7, #minimum confidence for hand detection, default is 0.5
         min_hand_presence_confidence=0.5, #minimum confidence for hand presence, default is 0.5
         min_tracking_confidence=0.5, #minimum confidence for hand tracking, default is 0.5
     )
@@ -194,6 +301,7 @@ def main():
                     latest_result.handedness, 
   
                     )
+                extended_fingers = []
                 for hand_landmark,handed in zipped:
                     # handed = latest_result[0].handedness[i][0] # Get the handedness for the current hand
                     handed = handed[0]  # Get the handedness for the current hand (out of the category list)
@@ -202,7 +310,10 @@ def main():
                     hand_score = handed.score
                     draw_landmarks(frame, hand_landmark, hand_label, hand_score)
                     draw_angles(frame, hand_landmark, JOINT_LIST)
-                    draw_extended_fingers(frame, hand_landmark, hand_label) 
+                    extended_fingers.append(is_extended_fingers(hand_landmark, hand_label))
+                print(f"Extended fingers for all hands: {extended_fingers}")
+                num_extended = count_extended_fingers(extended_fingers)
+                draw_num_extended_fingers(frame, num_extended) 
 
             c_time = time.time()
             fps = 1 / (c_time - p_time ) if p_time != 0 else 0
