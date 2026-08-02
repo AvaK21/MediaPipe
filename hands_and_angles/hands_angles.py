@@ -13,7 +13,13 @@ from mediapipe.tasks.python.vision.hand_landmarker import HandLandmark, HandLand
 
 BASE_PATH = os.path.dirname(os.path.abspath(__file__))
 MODEL_PATH = os.path.join(BASE_PATH,"..","Models", "hand_landmarker.task")
-JOINT_LIST = [ [6,7,8], [10,11,12],[14,15,16], [18,19,20], [2,3,4]]
+JOINT_LIST = [ 
+    [HandLandmark.THUMB_MCP,HandLandmark.THUMB_IP,HandLandmark.THUMB_TIP],
+    [HandLandmark.INDEX_FINGER_PIP,HandLandmark.INDEX_FINGER_DIP,HandLandmark.INDEX_FINGER_TIP], 
+    [HandLandmark.MIDDLE_FINGER_PIP,HandLandmark.MIDDLE_FINGER_DIP,HandLandmark.MIDDLE_FINGER_TIP],
+    [HandLandmark.RING_FINGER_PIP,HandLandmark.RING_FINGER_DIP,HandLandmark.RING_FINGER_TIP], 
+    [HandLandmark.PINKY_PIP,HandLandmark.PINKY_DIP,HandLandmark.PINKY_TIP], 
+    ]
 
 BaseOptions = mp.tasks.BaseOptions
 HandLandmarker = mp.tasks.vision.HandLandmarker
@@ -45,21 +51,53 @@ def draw_landmarks(frame, hand_landmark, handed):
     coord = (pts[HandLandmark.WRIST][0], pts[HandLandmark.WRIST][1] + 20)  # Position the text below the wrist landmark
     cv2.putText(frame, text,coord, cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2, cv2.LINE_AA)
 
-# Learn when to do python math or with np 
-# def draw_angle(frame, hand_world_landmark, JOINT_LIST):
-#     print("hand_world_landmark", hand_world_landmark)
-    # h, w = frame.shape[:2]
-    # for joint in JOINT_LIST:
-    #    a, b, c = joint
-    #    pt_a = np.array([hand_world_landmark[a].x * w, hand_world_landmark[a].y * h])
-    #    pt_b = np.array([hand_world_landmark[b].x * w, hand_world_landmark[b].y * h])
-    #    pt_c = np.array([hand_world_landmark[c].x * w, hand_world_landmark[c].y * h])
+# cos θ = (a·b) / (|a| |b|) ---this case--> θ = arccos((ba @ bc) / (||ba|| * ||bc||)) 
 
+def angle_between(a, b, c):
+    """
+    Calculate the angle between three points a, b, and c in 2D space.
+    """
+
+
+
+    # Convert the points to numpy arrays (or vectors)
+    a = np.array([a.x, a.y])
+    b = np.array([b.x, b.y])
+    c = np.array([c.x, c.y])
+
+    # Remove the effect of the middle point b by translating the points so that b is at the origin
+    ba = a - b
+    bc = c - b
+
+    cosine_angle = np.dot(ba, bc) / (np.linalg.norm(ba) * np.linalg.norm(bc))
+    # Radians, clips because arcos expects input in [-1, 1] (because cos only outputs [-1,1])
+    angle = np.arccos(np.clip(cosine_angle, -1.0, 1.0))
+    return np.degrees(angle)
+
+
+def draw_angles(frame, hand_landmark, joint_list):
+    """
+    Draws the angle value at the middle joint of each triplet.
+    Uses image coords (2D) for the math and draw position.
+    hand_world_landmark and (3D) tested and dropped -- confirmed unreliaable in bug #5571
+    """
+    h, w = frame.shape[:2]
+    for joint in joint_list:
+        a, b, c = joint
+        angle = angle_between(
+            hand_landmark[a], 
+            hand_landmark[b], 
+            hand_landmark[c]
+        )
+
+        # Draw position of the middle joint in image coordinates
+        pt = (int(hand_landmark[b].x * w), int(hand_landmark[b].y * h))
+        cv2.putText(frame, f"{angle:.0f}", pt, cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 200), 2, cv2.LINE_AA)
 
 
 def main():
-    latest_result = None #mutable list - needs a value on first call
-
+    #nonlocal variable to store the latest result from the hand landmarker. It is mutable so that it can be updated in the callback function.
+    latest_result = None
     #Function that is called when the hand landmarker has a result to return. This function is called in a separate thread, so it is asynchronous. It is called with the result, the output image, and the timestamp in milliseconds.
     def on_detection_result(result, output_image: mp.Image, timestamp_ms: int):
         #print('hand landmarker result: {}'.format(result))
@@ -74,7 +112,7 @@ def main():
         num_hands=2, #max number of hands to detect, default is 1
         min_hand_detection_confidence=0.5, #minimum confidence for hand detection, default is 0.5
         min_hand_presence_confidence=0.5, #minimum confidence for hand presence, default is 0.5
-        min_tracking_confidence=0.7, #minimum confidence for hand tracking, default is 0.5
+        min_tracking_confidence=0.5, #minimum confidence for hand tracking, default is 0.5
     )
 
 
@@ -116,14 +154,14 @@ def main():
                 zipped = zip(
                     latest_result.hand_landmarks, 
                     latest_result.handedness, 
-                    latest_result.hand_world_landmarks
+  
                     )
-                for hand_landmark,handed, hand_world_landmark in zipped:
+                for hand_landmark,handed in zipped:
                     # handed = latest_result[0].handedness[i][0] # Get the handedness for the current hand
                     handed = handed[0]  # Get the handedness for the current hand (out of the category list)
 
                     draw_landmarks(frame, hand_landmark, handed)
-                    #TODO draw_angle(frame, hand_world_landmark, JOINT_LIST)
+                    draw_angles(frame, hand_landmark, JOINT_LIST)
 
 
             cv2.imshow("Hand Tracking", frame)
