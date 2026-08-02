@@ -1,22 +1,27 @@
-""" 
-    hands_and_angles/hands_angles.py
-
-    By: Ava K. < 
-
-    This script uses MediaPipe's Hand Landmarker to detect hand landmarks in real-time from a webcam feed.
-    It draws the detected landmarks and calculates angles between specified joints of the hand. 
-    The angles, FPS, and which hand are displayed on the video feed.
-
-    Learned: 
-    
-    (2D) Hand Landmarks are more reliable than (3D) World Landmarks for angle calculations, as the latter can be inconsistent due to depth estimation errors.
-    How to access the handedness of detected hands and display it correctly.
-    Access hand landmarkers enum from MediaPipe, improve readability and maintainability of the code.
-    Calculate angles between joints using the cosine rule and display them on the video feed.
-    Calculate and display FPS in real-time to monitor performance.
-
 """
+    About see how to tell if a finger is extended or not 
 
+    Ideas : if 8 is above 6, but only would work for pure vertical hand,
+    maybe a dot product between vectors 0 and 5? and nuckle and tip of finger to see if in same direction and then 
+    check if tip is more in than direction than the nuckle, if so then extended, if not then not extended.
+    also for thumb if extended tip os past point or 2 ponts  opposite direction of the hand ( need to check/ account for if left or right hand, hand if flipped, hand is upside down or sideways , 90 off
+
+    maybe disable the count if hand is perperdicular to camera or close ( y position of wrist and middle finger tip are close together, or if the hand is upside down ( y position of wrist is above y position of middle finger tip)
+    (0,0)      (max,0)
+    
+    (0,max)   (max,max)
+"""
+# https://www.youtube.com/watch?v=p5Z_GGRCI5s
+
+# index to pinky
+# DPT angle is above 150, if vector D to T is in same direction  (roughly (will need to test) as wrist to 9) through dot product, then extended, if not then not extended.
+
+# thumb is more complicated,
+# first see if hand is left or right, and if flipped, then check if tip is past 1 point below or 2 (need to test)
+
+# Later is designated program or file, calculate all the angles once and then let function all use same data so only measured once, and so there isn't desicremence across data
+
+#TODO: As source flip the handded because the camera is flipped. SO it is correct for later functions
 import os
 import cv2
 import time
@@ -39,7 +44,7 @@ JOINT_LIST = [
     [HandLandmark.RING_FINGER_PIP,HandLandmark.RING_FINGER_DIP,HandLandmark.RING_FINGER_TIP], 
     [HandLandmark.PINKY_PIP,HandLandmark.PINKY_DIP,HandLandmark.PINKY_TIP], 
     ]
-
+EXTENED_FINGER_THRESHOLD = 160  # Angle threshold to consider a finger as extended
 BaseOptions = mp.tasks.BaseOptions
 HandLandmarker = mp.tasks.vision.HandLandmarker
 HandLandmarkerOptions = mp.tasks.vision.HandLandmarkerOptions
@@ -50,7 +55,7 @@ VisionRunningMode = mp.tasks.vision.RunningMode
 # cv2.line and cv2.circle expect int coordinates
 
 #assume is 1 hand
-def draw_landmarks(frame, hand_landmark, handed):
+def draw_landmarks(frame, hand_landmark, hand_label, hand_score):
     h, w = frame.shape[:2]
     #List comprehension - in this case result list of tuples of (x,y) coordinates of the landmarks in pixel coordinates.
     pts = [(int(lm.x * w), int(lm.y * h)) for lm in hand_landmark]
@@ -62,10 +67,9 @@ def draw_landmarks(frame, hand_landmark, handed):
         cv2.circle(frame, pt, 6, (200,0,200), cv2.FILLED)
         cv2.circle(frame, pt, 6, (255, 255, 255), 1)
 
-    name = handed.display_name
-    score = handed.score
-    name = "Right" if name == "Left" else "Left"
-    text = f"{name} ({score:.2f})"
+
+  
+    text = f"{hand_label} ({hand_score:.2f})"
 
     coord = (pts[HandLandmark.WRIST][0], pts[HandLandmark.WRIST][1] + 20)  # Position the text below the wrist landmark
     cv2.putText(frame, text,coord, cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2, cv2.LINE_AA)
@@ -76,10 +80,7 @@ def angle_between(a, b, c):
     """
     Calculate the angle between three points a, b, and c in 2D space.
     """
-
-
-
-    # Convert the points to numpy arrays (or vectors)
+    # Convert the points to numpy arrays (vectors)
     a = np.array([a.x, a.y])
     b = np.array([b.x, b.y])
     c = np.array([c.x, c.y])
@@ -113,7 +114,24 @@ def draw_angles(frame, hand_landmark, joint_list):
         pt = (int(hand_landmark[b].x * w), int(hand_landmark[b].y * h))
         cv2.putText(frame, f"{angle:.0f}", pt, cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 200), 2, cv2.LINE_AA)
 
+def draw_extended_fingers(frame, hand_landmark, hand_label):
+    extended_fingers = []
 
+    # Check each finger (index, middle, ring, pinky)
+    for finger in [HandLandmark.INDEX_FINGER_TIP, HandLandmark.MIDDLE_FINGER_TIP, HandLandmark.RING_FINGER_TIP, HandLandmark.PINKY_TIP]:
+        angle = angle_between(
+            hand_landmark[finger - 2],  # PIP joint
+            hand_landmark[finger - 1],  # DIP joint
+            hand_landmark[finger]       # Tip
+        )
+        if angle > EXTENED_FINGER_THRESHOLD:  # Threshold for extended finger
+            extended_fingers.append(True)
+        else:
+            extended_fingers.append(False)
+    print(f"Extended fingers for {hand_label}: {extended_fingers}")
+
+def flip_hand_name(name:str) -> str:
+    return "Right" if name == "Left" else "Left"
 def main():
     #nonlocal variable to store the latest result from the hand landmarker. It is mutable so that it can be updated in the callback function.
     latest_result = None
@@ -179,9 +197,12 @@ def main():
                 for hand_landmark,handed in zipped:
                     # handed = latest_result[0].handedness[i][0] # Get the handedness for the current hand
                     handed = handed[0]  # Get the handedness for the current hand (out of the category list)
+                    hand_label = flip_hand_name(handed.display_name)  # Flip the handedness name if needed
 
-                    draw_landmarks(frame, hand_landmark, handed)
+                    hand_score = handed.score
+                    draw_landmarks(frame, hand_landmark, hand_label, hand_score)
                     draw_angles(frame, hand_landmark, JOINT_LIST)
+                    draw_extended_fingers(frame, hand_landmark, hand_label) 
 
             c_time = time.time()
             fps = 1 / (c_time - p_time ) if p_time != 0 else 0
