@@ -11,6 +11,7 @@ Folders go over a topic for learning
 |handtracking|
 |skeleton_hands|
 |hands_and_angles|
+|extended_fingers|
 
 
 
