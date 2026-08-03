@@ -1,59 +1,131 @@
 """
-    About see how to tell if a finger is extended or not 
+Hand Analyzer Module
+=========================
+By: Ava K. < 
 
-    Ideas : if 8 is above 6, but only would work for pure vertical hand,
-    maybe a dot product between vectors 0 and 5? and nuckle and tip of finger to see if in same direction and then 
-    check if tip is more in than direction than the nuckle, if so then extended, if not then not extended.
-    also for thumb if extended tip os past point or 2 ponts  opposite direction of the hand ( need to check/ account for if left or right hand, hand if flipped, hand is upside down or sideways , 90 off
+Detects hand landmarks via MediaPipe's Hand Landmarker and determines which fingers are extended.
 
-    maybe disable the count if hand is perperdicular to camera or close ( y position of wrist and middle finger tip are close together, or if the hand is upside down ( y position of wrist is above y position of middle finger tip)
-    (0,0)      (max,0)
-    
-    (0,max)   (max,max)
+Extension logic:
+    - Index, middle, ring, pinky: PIP-DIP-TIP angle > threshold AND
+      dot product of (wrist→PIP) · (PIP→TIP) < 0 (finger pointing away from wrist).
+    - Thumb: cross product of (thumb_mcp→index_mcp) × (thumb_mcp→tip) determines
+      which side of the knuckle line the tip falls on, corrected for handedness and
+      palm orientation.
+ 
+Coordinate system (MediaPipe normalized):
+    (0,0) = top-left      (1,0) = top-right
+    (0,1) = bottom-left   (1,1) = bottom-right
+
+Comments:
+    -  h, w are normalized to [0,1] of frame size so  lm.x * w and lm.y * h gives the pixel coordinates of a landmark. 
+    -  cv2.line and cv2.circle expect int coordinates
+ 
+References:
+    - MediaPipe Hand Landmarker: https://developers.google.com/mediapipe/solutions/vision/hand_landmarker/python
+    - Bug #5571: hand_world_landmark (3D) confirmed unreliable; 2D image coords used throughout.
+ 
+TODO: Add threading.Lock() around _latest_result for thread safety (callback runs on separate thread).
+TODO: Disable finger count when hand is perpendicular to camera (wrist and middle tip x/y too close).
+TODO: Improve readability and Notes on Functions
+TODO: Remove Thumbe from joint list because it is handled separately in the thumb_extended_check() function.
+TODO: Naming convension for the functions and helper functions
+TODO: Test extended threshold a little more, maybe for each finger
 """
-# https://www.youtube.com/watch?v=p5Z_GGRCI5s
 
-# index to pinky
-# DPT angle is above 150, if vector D to T is in same direction  (roughly (will need to test) as wrist to 9) through dot product, then extended, if not then not extended.
-
-# thumb is more complicated,
-# first see if hand is left or right, and if flipped, then check if tip is past 1 point below or 2 (need to test)
-
-# Later is designated program or file, calculate all the angles once and then let function all use same data so only measured once, and so there isn't desicremence across data
-
-#TODO: As source flip the handded because the camera is flipped. SO it is correct for later functions
-import os
 import cv2
-import time
 import numpy as np
 import mediapipe as mp
-import math
 from mediapipe.tasks.python.vision.hand_landmarker import HandLandmark, HandLandmarksConnections
 
-#LLook up the gesture model math if that is available. 
+# --- MediaPipe aliases ---
 
-# Based on the Hand Landmarker example from the MediaPipe documentation: https://developers.google.com/mediapipe/solutions/vision/hand_landmarker/python
-# and legacy solutions tutorial, and AI
-# and previous work I have done with the MediaPipe Gesture Recognizer
-
-
-
-JOINT_LIST = [ 
-    [HandLandmark.THUMB_MCP,HandLandmark.THUMB_IP,HandLandmark.THUMB_TIP],
-    [HandLandmark.INDEX_FINGER_PIP,HandLandmark.INDEX_FINGER_DIP,HandLandmark.INDEX_FINGER_TIP], 
-    [HandLandmark.MIDDLE_FINGER_PIP,HandLandmark.MIDDLE_FINGER_DIP,HandLandmark.MIDDLE_FINGER_TIP],
-    [HandLandmark.RING_FINGER_PIP,HandLandmark.RING_FINGER_DIP,HandLandmark.RING_FINGER_TIP], 
-    [HandLandmark.PINKY_PIP,HandLandmark.PINKY_DIP,HandLandmark.PINKY_TIP], 
-    ]
-EXTENED_FINGER_THRESHOLD = 160  # Angle threshold to consider a finger as extended
 BaseOptions = mp.tasks.BaseOptions
 HandLandmarker = mp.tasks.vision.HandLandmarker
 HandLandmarkerOptions = mp.tasks.vision.HandLandmarkerOptions
 HandLandmarkerResults = mp.tasks.vision.HandLandmarkerResult
 VisionRunningMode = mp.tasks.vision.RunningMode
 
-# h, w are normalized to [0,1] of frame size so  lm.x * w and lm.y * h gives the pixel coordinates of the landmark. 
-# cv2.line and cv2.circle expect int coordinates
+# --- Constants ---
+
+# Triplets (a,b,c), b is vertex, used to calculate angles used to determine if fingers are extended
+JOINT_LIST = [ 
+    [HandLandmark.THUMB_MCP,            HandLandmark.THUMB_IP,          HandLandmark.THUMB_TIP],
+    [HandLandmark.INDEX_FINGER_PIP,     HandLandmark.INDEX_FINGER_DIP,  HandLandmark.INDEX_FINGER_TIP], 
+    [HandLandmark.MIDDLE_FINGER_PIP,    HandLandmark.MIDDLE_FINGER_DIP, HandLandmark.MIDDLE_FINGER_TIP],
+    [HandLandmark.RING_FINGER_PIP,      HandLandmark.RING_FINGER_DIP,   HandLandmark.RING_FINGER_TIP], 
+    [HandLandmark.PINKY_PIP,            HandLandmark.PINKY_DIP,         HandLandmark.PINKY_TIP], 
+    ]
+
+# Minimum PIP-DIP-TIP angle (degrees) to consider a finger to be extended.
+EXTENED_FINGER_THRESHOLD = 160 
+
+# --- Pure math utilities ---
+
+def lm_to_vec(lm) -> np.ndarray:
+    """Convert a MediaPipe landmark to a 2D numpy vector."""
+    return np.array([lm.x, lm.y])
+
+# def distance(a,b):
+#     """
+#     a: handlamrtk. enum
+#     b: handlamrtk. enum
+
+#     returns: the distance between two points in 2D space. Euclidean distance is calculated using numpy's linear algebra norm function.
+#     Is the same as math.sqrt((a[0]-b[0])**2 + (a[1]-b[1])**2) but more efficient and concise.
+#     """
+#     a = np.array([a.x, a.y])
+#     b = np.array([b.x, b.y])
+#     return np.linalg.norm(a - b)
+
+
+def angle_between(a, b, c) -> float:
+    """
+    Angle at vertex b formed by points a-b-c (degrees).
+ 
+    Uses: θ = arccos((ba · bc) / (|ba| |bc|))
+    Clips cosine to [-1, 1] before arccos to guard against floating-point drift.
+    """
+    # Convert the points to numpy arrays (vectors)
+    a = lm_to_vec(a)
+    b = lm_to_vec(b)
+    c = lm_to_vec(c)
+
+    # Remove the effect of the middle point b by translating the points so that b is at the origin
+    ba = a - b
+    bc = c - b
+
+    cosine = np.dot(ba, bc) / (np.linalg.norm(ba) * np.linalg.norm(bc))
+    # Radians, clips because arcos expects input in [-1, 1] (because cos only outputs [-1,1])
+    angle = np.arccos(np.clip(cosine, -1.0, 1.0))
+    return np.degrees(angle)
+
+
+def dot_product(a,b,c) -> float:
+        """
+        a: handlamrtk. enum
+        b: handlamrtk. enum
+        c: handlamrtk. enum
+
+        Returns: Dot product of vector b->a and vector b->c. 
+        
+        Positive dot product: vectors point in the same general direction (angle < 90 degrees).
+        Negative dot product: vectors point in opposite directions (angle > 90 degrees).
+
+
+        Ex: Wrist to DIP of a finger, and DIP to TIP of the same finger. 
+        If the dot product is negative, it indicate the finger is extended away from the wrist.
+        """
+        a = np.array([a.x, a.y])
+        b = np.array([b.x, b.y])
+        c = np.array([c.x, c.y])
+
+        # make b the origin of the vectors by subtracting b from a and c
+        ba = a - b
+        bc = c -b
+
+        return np.dot(ba, bc) 
+
+# --- Main HandAnalyzer class ---
 
 class HandAnalyzer:
     """
@@ -156,7 +228,7 @@ class HandAnalyzer:
         h, w = frame.shape[:2]
         for joint in joint_list:
             a, b, c = joint
-            angle = self.angle_between(
+            angle = angle_between(
                 hand_landmark[a], 
                 hand_landmark[b], 
                 hand_landmark[c]
@@ -171,12 +243,12 @@ class HandAnalyzer:
 
         # Check each finger (index, middle, ring, pinky)
         for finger in [HandLandmark.INDEX_FINGER_TIP, HandLandmark.MIDDLE_FINGER_TIP, HandLandmark.RING_FINGER_TIP, HandLandmark.PINKY_TIP]:
-            angle = self.angle_between(
+            angle = angle_between(
                 hand_landmark[finger - 2],  # PIP joint
                 hand_landmark[finger - 1],  # DIP joint
                 hand_landmark[finger]       # Tip
             )
-            dot = self.get_dot_product(hand_landmark[HandLandmark.WRIST], hand_landmark[finger - 2], hand_landmark[finger])
+            dot = dot_product(hand_landmark[HandLandmark.WRIST], hand_landmark[finger - 2], hand_landmark[finger])
             print(f"Finger {finger}: Angle = {angle:.2f}, Dot Product = {dot:.2f}")
             if dot < 0 and angle > EXTENED_FINGER_THRESHOLD:  # Threshold for extended finger
                 extended_fingers.append(True)
@@ -211,24 +283,7 @@ class HandAnalyzer:
     def flip_hand_name(self, name:str) -> str:
         return "Right" if name == "Left" else "Left"
 
-    def get_dot_product(self, a,b,c):
-        """
-        a: handlamrtk. enum
-        b: handlamrtk. enum
-        c: handlamrtk. enum
-        returns the dot product of the two vectors, which is a measure of how much they point in the same direction.
-
-        Ex: Wrist to DIP of a finger, and DIP to TIP of the same finger. If the dot product is positive...
-        """
-        a = np.array([a.x, a.y])
-        b = np.array([b.x, b.y])
-        c = np.array([c.x, c.y])
-
-        # make b the origin of the vectors by subtracting b from a and c
-        ba = a - b
-        bc = c -b
-
-        return np.dot(ba, bc) 
+    
 
 
     def is_palm_facing_camera(self, hand_landmark, hand_label):
@@ -274,36 +329,3 @@ class HandAnalyzer:
         result = bool(expected_sign)
         return result
 
-
-
-
-    def distance(self,a,b):
-        """
-        a: handlamrtk. enum
-        b: handlamrtk. enum
-
-        returns: the distance between two points in 2D space. Euclidean distance is calculated using numpy's linear algebra norm function.
-        Is the same as math.sqrt((a[0]-b[0])**2 + (a[1]-b[1])**2) but more efficient and concise.
-        """
-        a = np.array([a.x, a.y])
-        b = np.array([b.x, b.y])
-        return np.linalg.norm(a - b)
-
-
-    def angle_between(self, a, b, c):
-        """
-        Calculate the angle between three points a, b, and c in 2D space.
-        """
-        # Convert the points to numpy arrays (vectors)
-        a = np.array([a.x, a.y])
-        b = np.array([b.x, b.y])
-        c = np.array([c.x, c.y])
-
-        # Remove the effect of the middle point b by translating the points so that b is at the origin
-        ba = a - b
-        bc = c - b
-
-        cosine_angle = np.dot(ba, bc) / (np.linalg.norm(ba) * np.linalg.norm(bc))
-        # Radians, clips because arcos expects input in [-1, 1] (because cos only outputs [-1,1])
-        angle = np.arccos(np.clip(cosine_angle, -1.0, 1.0))
-        return np.degrees(angle)

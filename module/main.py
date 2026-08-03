@@ -35,7 +35,7 @@ def main():
         analyzer.process_frame(frame, ts)
 
         results  = analyzer.analyze_results(frame) if analyzer.analyze_results(frame) else (None, None)
-        num_extended = num_extended if results[1] is not None else 0
+        num_extended = num_extended if results is not None and  results[1] is not None else 0
         print(f"Extended: {num_extended} fingers detected.")
         
 

@@ -10,6 +10,11 @@
     (0,0)      (max,0)
     
     (0,max)   (max,max)
+
+    Learned 
+    How to measure if hand is extended based on the angle between joints on the finger, sign of the dot product of the vectors
+    move experience with drawing text on the frame
+    Sign of cross product is used to determine if the palm is facing the camera or not, and then the sign of the cross product of the thumb and index finger is used to determine if the thumb is extended or not.
 """
 # https://www.youtube.com/watch?v=p5Z_GGRCI5s
 
