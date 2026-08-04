@@ -16,6 +16,9 @@ def main():
     last_ts = 0
     p_time = time.time()
 
+    p_extended = 0
+    num_extended = 0
+
     analyzer = HandAnalyzer(MODEL_PATH)
 
     while cap.isOpened():
@@ -35,8 +38,13 @@ def main():
         analyzer.process_frame(frame, ts)
 
         results  = analyzer.analyze_results(frame) if analyzer.analyze_results(frame) else (None, None)
-        num_extended = num_extended if results is not None and  results[1] is not None else 0
-        print(f"Extended: {num_extended} fingers detected.")
+        num_extended = results[1] if results is not None and  results[1] is not None else 0
+
+        if p_extended != num_extended:
+            p_extended = num_extended
+            print(f"Extended: {num_extended} fingers detected.")
+
+        
         
 
 

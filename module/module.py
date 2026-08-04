@@ -28,10 +28,9 @@ TODO: Add threading.Lock() around _latest_result for thread safety (callback run
 TODO: Disable finger count when hand is perpendicular to camera (wrist and middle tip x/y too close).
 TODO: Improve readability and Notes on Functions
 TODO: Remove Thumbe from joint list because it is handled separately in the thumb_extended_check() function.
-TODO: Naming convension for the functions and helper functions
-TODO: Test extended threshold a little more, maybe for each finger
+TODO: Naming convension for the functions and helper functions and comments.
 """
-
+import os
 import cv2
 import numpy as np
 import mediapipe as mp
@@ -76,6 +75,12 @@ def lm_to_vec(lm) -> np.ndarray:
 #     a = np.array([a.x, a.y])
 #     b = np.array([b.x, b.y])
 #     return np.linalg.norm(a - b)
+
+def flip_hand_name(name:str) -> str:
+    """ Flip Left <-> Right to comidate for mirrored camera image. """
+    return "Right" if name == "Left" else "Left"
+
+    
 
 
 def angle_between(a, b, c) -> float:
@@ -131,11 +136,22 @@ class HandAnalyzer:
     """
     Full hand analysis pipeline,
     Owns the MediaPipe HandLandmarker model and exposes methods
+
+    Call procress_frame() each loop iteration, then analyze_results() to get the extended finger count and draw on the frame.
+    
+    Args:
+        model_path: Path to the hand_landmarker.task model file.
+        num_hands: Maximum number of hands to detect (default 2).
+    
     """
 
     EXTENDED_THRESHOLD = 160
 
     def __init__(self, model_path: str, num_hands : int = 2):
+
+        if not os.path.exists(model_path):
+            raise FileNotFoundError(f"Model file not found: {model_path}")
+
         self.model_path = model_path
         self.num_hands = num_hands
         self._latest_result = None
@@ -156,7 +172,11 @@ class HandAnalyzer:
 
     def process_frame(self, frame: np.ndarray, timestamp_ms)-> None:
         """
-        Process a single frame 
+        Process a single frame: BGR cv2 image, convert to RGB, and send to the hand landmarker for asynchronous detection.
+
+        Args:
+            frame: BGR image from cv2.VideoCapture.
+            timestamp_ms: Timestamp in milliseconds for the frame (must be monotonically increasing).
         """
         frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         self._mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame_rgb)
@@ -164,7 +184,15 @@ class HandAnalyzer:
 
     def analyze_results(self,frame) -> tuple[list[list[bool]], int] | None:
         """
-        Analyze the latest results and draw on the frame
+        Analyze the latest results and draw overlays on the frame.
+
+        Args:
+            frame: BGR image from cv2.VideoCapture to draw landmarks, angles, and extended finger count.
+        
+        Returns:
+            (extended_fingers, num_extended) where extended_fingers is a list of
+            per-hand bool lists [index, middle, ring, pinky, thumb], or None if
+            no hands are detected.
         """
         if self._latest_result is not None and self._latest_result.hand_landmarks:
             zipped = zip(
@@ -174,28 +202,101 @@ class HandAnalyzer:
             extended_fingers = []
             for hand_landmark, handed in zipped:
                 handed = handed[0]  # Get the handedness for the current hand (out of the category list)
-                hand_label = self.flip_hand_name(handed.display_name)  # Flip the handedness name if needed
+                hand_label = flip_hand_name(handed.display_name)  # Flip the handedness name if needed
                 hand_score = handed.score
-                self.draw_landmarks(frame, hand_landmark, hand_label, hand_score)
-                self.draw_angles(frame, hand_landmark, JOINT_LIST)
-                extended_fingers.append(self.is_extended_fingers(hand_landmark, hand_label))
-            num_extended = self.count_extended_fingers(extended_fingers)
-            self.draw_num_extended_fingers(frame, num_extended)
+                self._draw_landmarks(frame, hand_landmark, hand_label, hand_score)
+                self._draw_angles(frame, hand_landmark, JOINT_LIST)
+                extended_fingers.append(self._is_extended(hand_landmark, hand_label))
+            num_extended = self._count_extended_fingers(extended_fingers)
+            self._draw_extended_count(frame, num_extended)
             return extended_fingers, num_extended
         else: 
             return None
     
 
-    def _on_result(self, result, output_image: mp.Image, timestamp_ms: int):
-        #print('hand landmarker result: {}'.format(result))
-         #use the mutable list to store the latest result
-        self._latest_result = result #store the latest result in the mutable list
-
-    def close(self):
+    def close(self) -> None:
+        """Release resources associated with the hand landmarker. Call on exit."""
         self._landmarker.close()
 
+    # --- Callback Methods ---
+
+    def _on_result(self, result, output_image: mp.Image, timestamp_ms: int) -> None:
+        """Runs on a seperate thread when the hand landmarker has a result. Stores the latest result in a mutable list."""
+        #print('hand landmarker result: {}'.format(result))
+        self._latest_result = result #store the latest result in the mutable list
+
+    # --- Extended Logic ---
+
+    
+    def _is_extended(self, hand_landmark, hand_label) -> list[bool]:
+        extended_fingers = []
+
+        # Check each finger (index, middle, ring, pinky)
+        for finger in [HandLandmark.INDEX_FINGER_TIP, HandLandmark.MIDDLE_FINGER_TIP, HandLandmark.RING_FINGER_TIP, HandLandmark.PINKY_TIP]:
+            angle = angle_between(
+                hand_landmark[finger - 2],  # PIP joint
+                hand_landmark[finger - 1],  # DIP joint
+                hand_landmark[finger]       # Tip
+            )
+            dot = dot_product(hand_landmark[HandLandmark.WRIST], hand_landmark[finger - 2], hand_landmark[finger])
+            #print(f"Finger {finger}: Angle = {angle:.2f}, Dot Product = {dot:.2f}")
+            if dot < 0 and angle > EXTENED_FINGER_THRESHOLD:  # Threshold for extended finger
+                extended_fingers.append(True)
+            else:
+                extended_fingers.append(False)
+        thumb =self._is_thumb_extended(hand_landmark, hand_label)
+        extended_fingers.append(thumb)
+
+        #print(f"Extended fingers for {hand_label}: {extended_fingers}")
+        return extended_fingers
+
+    def _is_thumb_extended(self,hand_landmark, hand_label) -> bool:
+        index_mcp = np.array([hand_landmark[HandLandmark.INDEX_FINGER_MCP].x, hand_landmark[HandLandmark.INDEX_FINGER_MCP].y])
+        thumb_mcp = np.array([hand_landmark[HandLandmark.THUMB_MCP].x, hand_landmark[HandLandmark.THUMB_MCP].y])
+        thumb_tip = np.array([hand_landmark[HandLandmark.THUMB_TIP].x, hand_landmark[HandLandmark.THUMB_TIP].y])
+
+        cross = np.cross( index_mcp - thumb_mcp, thumb_tip - thumb_mcp)
+
+
+        palm_facing = self._is_palm_facing(hand_landmark, hand_label)
+
+        if cross == 0 or palm_facing is None:
+            return False  # Thumb is not extended if the cross product is zero or palm is not facing camera
+
+        if hand_label == "Right":
+            expected_sign = cross < 0
+        else:
+            expected_sign = cross > 0
+
+        # Flip logic if palm is facing away
+        if not palm_facing:
+            expected_sign = not expected_sign
+        result = bool(expected_sign)
+        return result
+
+    def _is_palm_facing(self, hand_landmark, hand_label) -> bool:
+        """
+        Infer palm direction from landmark winding order.
+        Returns True if palm is facing camera.
+        """
+        mid    = np.array([hand_landmark[HandLandmark.MIDDLE_FINGER_MCP].x, hand_landmark[HandLandmark.MIDDLE_FINGER_MCP].y]) 
+        wrist  = np.array([hand_landmark[HandLandmark.WRIST].x, hand_landmark[HandLandmark.WRIST].y]) 
+        pinky  = np.array([hand_landmark[HandLandmark.PINKY_MCP].x, hand_landmark[HandLandmark.PINKY_MCP].y])
+
+        cross = np.cross(mid - wrist, pinky - wrist)
+
+        if cross == 0:
+            return False  # Palm is not facing camera if the cross product is zero
+
+        if hand_label == "Right":
+            return cross > 0
+        else:
+            return cross < 0
+        
+    # --- Drawing Methods ---
+
     #assume is 1 hand
-    def draw_landmarks(self, frame, hand_landmark, hand_label, hand_score):
+    def _draw_landmarks(self, frame, hand_landmark, hand_label, hand_score):
         h, w = frame.shape[:2]
         #List comprehension - in this case result list of tuples of (x,y) coordinates of the landmarks in pixel coordinates.
         pts = [(int(lm.x * w), int(lm.y * h)) for lm in hand_landmark]
@@ -219,7 +320,7 @@ class HandAnalyzer:
 
 
 
-    def draw_angles(self, frame, hand_landmark, joint_list):
+    def _draw_angles(self, frame, hand_landmark, joint_list):
         """
         Draws the angle value at the middle joint of each triplet.
         Uses image coords (2D) for the math and draw position.
@@ -238,39 +339,9 @@ class HandAnalyzer:
             pt = (int(hand_landmark[b].x * w), int(hand_landmark[b].y * h))
             cv2.putText(frame, f"{angle:.0f}", pt, cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 200), 2, cv2.LINE_AA)
 
-    def is_extended_fingers(self, hand_landmark, hand_label):
-        extended_fingers = []
-
-        # Check each finger (index, middle, ring, pinky)
-        for finger in [HandLandmark.INDEX_FINGER_TIP, HandLandmark.MIDDLE_FINGER_TIP, HandLandmark.RING_FINGER_TIP, HandLandmark.PINKY_TIP]:
-            angle = angle_between(
-                hand_landmark[finger - 2],  # PIP joint
-                hand_landmark[finger - 1],  # DIP joint
-                hand_landmark[finger]       # Tip
-            )
-            dot = dot_product(hand_landmark[HandLandmark.WRIST], hand_landmark[finger - 2], hand_landmark[finger])
-            #print(f"Finger {finger}: Angle = {angle:.2f}, Dot Product = {dot:.2f}")
-            if dot < 0 and angle > EXTENED_FINGER_THRESHOLD:  # Threshold for extended finger
-                extended_fingers.append(True)
-            else:
-                extended_fingers.append(False)
-        thumb =self.thumb_extended_check(hand_landmark, hand_label)
-        extended_fingers.append(thumb)
-
-        #print(f"Extended fingers for {hand_label}: {extended_fingers}")
-        return extended_fingers
-
-    def count_extended_fingers(self, extended_fingers: list) -> int:
-        if extended_fingers is None:
-            return 0
-        #Normailze to list of lists
-        if not isinstance(extended_fingers[0], list):
-            extended_fingers = [extended_fingers]
-        num_extended = sum(1 for hand in extended_fingers for extended in hand if extended)
-        return num_extended
 
 
-    def draw_num_extended_fingers(self,frame, num_extended) -> None:
+    def _draw_extended_count(self,frame, num_extended) -> None:
 
 
         text = f"Count: {num_extended}"
@@ -280,52 +351,15 @@ class HandAnalyzer:
 
 
 
-    def flip_hand_name(self, name:str) -> str:
-        return "Right" if name == "Left" else "Left"
-
-    
-
-
-    def is_palm_facing_camera(self, hand_landmark, hand_label):
-        """
-        Infer palm direction from landmark winding order.
-        Returns True if palm is facing camera.
-        """
-        mid    = np.array([hand_landmark[HandLandmark.MIDDLE_FINGER_MCP].x, hand_landmark[HandLandmark.MIDDLE_FINGER_MCP].y]) 
-        wrist  = np.array([hand_landmark[HandLandmark.WRIST].x, hand_landmark[HandLandmark.WRIST].y]) 
-        pinky  = np.array([hand_landmark[HandLandmark.PINKY_MCP].x, hand_landmark[HandLandmark.PINKY_MCP].y])
-
-        cross = np.cross(mid - wrist, pinky - wrist)
-
-        if cross == 0:
-            return False  # Palm is not facing camera if the cross product is zero
-
-        if hand_label == "Right":
-            return cross > 0
-        else:
-            return cross < 0
-        
-    def thumb_extended_check(self,hand_landmark, hand_label):
-        index_mcp = np.array([hand_landmark[HandLandmark.INDEX_FINGER_MCP].x, hand_landmark[HandLandmark.INDEX_FINGER_MCP].y])
-        thumb_mcp = np.array([hand_landmark[HandLandmark.THUMB_MCP].x, hand_landmark[HandLandmark.THUMB_MCP].y])
-        thumb_tip = np.array([hand_landmark[HandLandmark.THUMB_TIP].x, hand_landmark[HandLandmark.THUMB_TIP].y])
-
-        cross = np.cross( index_mcp - thumb_mcp, thumb_tip - thumb_mcp)
+    @staticmethod
+    def _count_extended_fingers(extended_fingers: list) -> int:
+        if extended_fingers is None:
+            return 0
+        #Normailze to list of lists
+        if not isinstance(extended_fingers[0], list):
+            extended_fingers = [extended_fingers]
+        num_extended = sum(1 for hand in extended_fingers for extended in hand if extended)
+        return num_extended
 
 
-        palm_facing = self.is_palm_facing_camera(hand_landmark, hand_label)
-
-        if cross == 0 or palm_facing is None:
-            return False  # Thumb is not extended if the cross product is zero or palm is not facing camera
-
-        if hand_label == "Right":
-            expected_sign = cross < 0
-        else:
-            expected_sign = cross > 0
-
-        # Flip logic if palm is facing away
-        if not palm_facing:
-            expected_sign = not expected_sign
-        result = bool(expected_sign)
-        return result
 
