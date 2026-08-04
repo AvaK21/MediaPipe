@@ -57,7 +57,7 @@ JOINT_LIST = [
     ]
 
 # Minimum PIP-DIP-TIP angle (degrees) to consider a finger to be extended.
-EXTENED_FINGER_THRESHOLD = 160 
+EXTENED_FINGER_THRESHOLD = 170 
 
 # --- Pure math utilities ---
 
@@ -249,7 +249,7 @@ class HandAnalyzer:
                 hand_landmark[finger]       # Tip
             )
             dot = dot_product(hand_landmark[HandLandmark.WRIST], hand_landmark[finger - 2], hand_landmark[finger])
-            print(f"Finger {finger}: Angle = {angle:.2f}, Dot Product = {dot:.2f}")
+            #print(f"Finger {finger}: Angle = {angle:.2f}, Dot Product = {dot:.2f}")
             if dot < 0 and angle > EXTENED_FINGER_THRESHOLD:  # Threshold for extended finger
                 extended_fingers.append(True)
             else:
@@ -257,7 +257,7 @@ class HandAnalyzer:
         thumb =self.thumb_extended_check(hand_landmark, hand_label)
         extended_fingers.append(thumb)
 
-        print(f"Extended fingers for {hand_label}: {extended_fingers}")
+        #print(f"Extended fingers for {hand_label}: {extended_fingers}")
         return extended_fingers
 
     def count_extended_fingers(self, extended_fingers: list) -> int:
@@ -274,7 +274,7 @@ class HandAnalyzer:
 
 
         text = f"Count: {num_extended}"
-        print(num_extended)
+        #print(num_extended)
 
         cv2.putText(frame, text, (250,50), cv2.FONT_HERSHEY_SIMPLEX, 1, (200,0,200), cv2.LINE_AA)
 
