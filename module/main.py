@@ -16,7 +16,7 @@ def main():
     last_ts = 0
     p_time = time.time()
 
-    p_extended = 0
+    p_extended = -1
     num_extended = 0
 
     analyzer = HandAnalyzer(MODEL_PATH)
@@ -24,7 +24,7 @@ def main():
     while cap.isOpened():
         ok, frame = cap.read()
         if not ok:
-            break
+            continue 
         frame = cv2.flip(frame, 1)
 
         # If the timestamp is not greater than the previous timestamp, increment it by 1 to ensure that the timestamps are monotonically increasing.
@@ -34,21 +34,14 @@ def main():
             ts = last_ts + 1
         last_ts = ts
 
-        #landmarker.detect_async(mp_image, timestamp_ms=ts)
         analyzer.process_frame(frame, ts)
 
-        results  = analyzer.analyze_results(frame) if analyzer.analyze_results(frame) else (None, None)
-        num_extended = results[1] if results is not None and  results[1] is not None else 0
+        results  = analyzer.analyze_results(frame)
+        num_extended = results[1] if results is not None and results[1] is not None else 0
 
         if p_extended != num_extended:
             p_extended = num_extended
             print(f"Extended: {num_extended} fingers detected.")
-
-        
-        
-
-
-        
 
         c_time = time.time()
         fps = 1 / (c_time - p_time ) if p_time != 0 else 0

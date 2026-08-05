@@ -24,11 +24,6 @@ References:
     - MediaPipe Hand Landmarker: https://developers.google.com/mediapipe/solutions/vision/hand_landmarker/python
     - Bug #5571: hand_world_landmark (3D) confirmed unreliable; 2D image coords used throughout.
  
-TODO: Add threading.Lock() around _latest_result for thread safety (callback runs on separate thread).
-TODO: Disable finger count when hand is perpendicular to camera (wrist and middle tip x/y too close).
-TODO: Improve readability and Notes on Functions
-TODO: Remove Thumbe from joint list because it is handled separately in the thumb_extended_check() function.
-TODO: Naming convension for the functions and helper functions and comments.
 """
 import os
 import cv2
@@ -55,7 +50,7 @@ JOINT_LIST = [
     [HandLandmark.PINKY_PIP,            HandLandmark.PINKY_DIP,         HandLandmark.PINKY_TIP], 
     ]
 
-# Minimum PIP-DIP-TIP angle (degrees) to consider a finger to be extended.
+# Minimum PIP-DIP-TIP angle (degrees) for the possibility that a finger is extended.
 EXTENED_FINGER_THRESHOLD = 170 
 
 # --- Pure math utilities ---
@@ -64,17 +59,7 @@ def lm_to_vec(lm) -> np.ndarray:
     """Convert a MediaPipe landmark to a 2D numpy vector."""
     return np.array([lm.x, lm.y])
 
-# def distance(a,b):
-#     """
-#     a: handlamrtk. enum
-#     b: handlamrtk. enum
 
-#     returns: the distance between two points in 2D space. Euclidean distance is calculated using numpy's linear algebra norm function.
-#     Is the same as math.sqrt((a[0]-b[0])**2 + (a[1]-b[1])**2) but more efficient and concise.
-#     """
-#     a = np.array([a.x, a.y])
-#     b = np.array([b.x, b.y])
-#     return np.linalg.norm(a - b)
 
 def flip_hand_name(name:str) -> str:
     """ Flip Left <-> Right to comidate for mirrored camera image. """
@@ -120,9 +105,9 @@ def dot_product(a,b,c) -> float:
         Ex: Wrist to DIP of a finger, and DIP to TIP of the same finger. 
         If the dot product is negative, it indicate the finger is extended away from the wrist.
         """
-        a = np.array([a.x, a.y])
-        b = np.array([b.x, b.y])
-        c = np.array([c.x, c.y])
+        a = lm_to_vec(a)
+        b = lm_to_vec(b)
+        c = lm_to_vec(c)
 
         # make b the origin of the vectors by subtracting b from a and c
         ba = a - b
@@ -155,7 +140,6 @@ class HandAnalyzer:
         self.model_path = model_path
         self.num_hands = num_hands
         self._latest_result = None
-        self._mp_image = None  # Store the latest MediaPipe image for drawing
   
 
         # Create a hand landmarker with the specified options
@@ -179,8 +163,8 @@ class HandAnalyzer:
             timestamp_ms: Timestamp in milliseconds for the frame (must be monotonically increasing).
         """
         frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        self._mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame_rgb)
-        self._landmarker.detect_async(self._mp_image, timestamp_ms=timestamp_ms)
+        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame_rgb)
+        self._landmarker.detect_async(mp_image, timestamp_ms=timestamp_ms)
 
     def analyze_results(self,frame) -> tuple[list[list[bool]], int] | None:
         """
@@ -229,9 +213,24 @@ class HandAnalyzer:
 
     
     def _is_extended(self, hand_landmark, hand_label) -> list[bool]:
+        """
+        Determine which fingers are extended for a single hand. 
+        
+        Args:
+            hand_landmark: List of MediaPipe hand landmarks for a single hand.
+            hand_label: String label for the hand ("Left" or "Right").
+
+        Returns:
+            list of bools [thumb, index, middle, ring, pinky].
+        
+        """
         extended_fingers = []
 
-        # Check each finger (index, middle, ring, pinky)
+        #Check thumb separately because it has a different extension logic
+        thumb =self._is_thumb_extended(hand_landmark, hand_label)
+        extended_fingers.append(thumb)
+
+        # Check fingers if extended (index, middle, ring, pinky)
         for finger in [HandLandmark.INDEX_FINGER_TIP, HandLandmark.MIDDLE_FINGER_TIP, HandLandmark.RING_FINGER_TIP, HandLandmark.PINKY_TIP]:
             angle = angle_between(
                 hand_landmark[finger - 2],  # PIP joint
@@ -244,25 +243,29 @@ class HandAnalyzer:
                 extended_fingers.append(True)
             else:
                 extended_fingers.append(False)
-        thumb =self._is_thumb_extended(hand_landmark, hand_label)
-        extended_fingers.append(thumb)
+
 
         #print(f"Extended fingers for {hand_label}: {extended_fingers}")
         return extended_fingers
 
     def _is_thumb_extended(self,hand_landmark, hand_label) -> bool:
-        index_mcp = np.array([hand_landmark[HandLandmark.INDEX_FINGER_MCP].x, hand_landmark[HandLandmark.INDEX_FINGER_MCP].y])
-        thumb_mcp = np.array([hand_landmark[HandLandmark.THUMB_MCP].x, hand_landmark[HandLandmark.THUMB_MCP].y])
-        thumb_tip = np.array([hand_landmark[HandLandmark.THUMB_TIP].x, hand_landmark[HandLandmark.THUMB_TIP].y])
+        """
+        Determine if the thumb is extended based on the cross product of vectors from  thumb MCP -> index MCP and  thumb MCP -> thumb tip. 
+        The sign of the cross product indicates  if the thumb has crossed the thumb MCP -> index MCP line, and therefore if the thumb is extended or not, 
+        taking into account handedness and palm orientation.
+        """
+        index_mcp = lm_to_vec(hand_landmark[HandLandmark.INDEX_FINGER_MCP]) 
+        thumb_mcp = lm_to_vec(hand_landmark[HandLandmark.THUMB_MCP])
+        thumb_tip = lm_to_vec(hand_landmark[HandLandmark.THUMB_TIP]) 
 
         cross = np.cross( index_mcp - thumb_mcp, thumb_tip - thumb_mcp)
 
 
         palm_facing = self._is_palm_facing(hand_landmark, hand_label)
 
-        if cross == 0 or palm_facing is None:
-            return False  # Thumb is not extended if the cross product is zero or palm is not facing camera
-
+        if cross == 0:
+            return False  # Thumb is not extended if the cross product is zero (collinear)
+        
         if hand_label == "Right":
             expected_sign = cross < 0
         else:
@@ -279,10 +282,9 @@ class HandAnalyzer:
         Infer palm direction from landmark winding order.
         Returns True if palm is facing camera.
         """
-        mid    = np.array([hand_landmark[HandLandmark.MIDDLE_FINGER_MCP].x, hand_landmark[HandLandmark.MIDDLE_FINGER_MCP].y]) 
-        wrist  = np.array([hand_landmark[HandLandmark.WRIST].x, hand_landmark[HandLandmark.WRIST].y]) 
-        pinky  = np.array([hand_landmark[HandLandmark.PINKY_MCP].x, hand_landmark[HandLandmark.PINKY_MCP].y])
-
+        mid    = lm_to_vec(hand_landmark[HandLandmark.MIDDLE_FINGER_MCP])
+        wrist  = lm_to_vec(hand_landmark[HandLandmark.WRIST])
+        pinky  = lm_to_vec(hand_landmark[HandLandmark.PINKY_MCP])
         cross = np.cross(mid - wrist, pinky - wrist)
 
         if cross == 0:
@@ -297,6 +299,15 @@ class HandAnalyzer:
 
     #assume is 1 hand
     def _draw_landmarks(self, frame, hand_landmark, hand_label, hand_score):
+        """
+        Draws the hand landmarks and connections on the frame.
+        
+        Args:
+            frame: BGR image from cv2.VideoCapture to draw landmarks and connections.
+            hand_landmark: List of MediaPipe hand landmarks for a single hand.
+            hand_label: String label for the hand ("Left" or "Right").
+            hand_score: Confidence score for the hand detection.
+        """
         h, w = frame.shape[:2]
         #List comprehension - in this case result list of tuples of (x,y) coordinates of the landmarks in pixel coordinates.
         pts = [(int(lm.x * w), int(lm.y * h)) for lm in hand_landmark]
@@ -341,9 +352,7 @@ class HandAnalyzer:
 
 
 
-    def _draw_extended_count(self,frame, num_extended) -> None:
-
-
+    def _draw_extended_count(self,frame, num_extended:int) -> None:
         text = f"Count: {num_extended}"
         #print(num_extended)
 
@@ -353,6 +362,13 @@ class HandAnalyzer:
 
     @staticmethod
     def _count_extended_fingers(extended_fingers: list) -> int:
+        """
+        Counts the total number of extended fingers across all hands.
+        Args:
+            extended_fingers: List or list of lists of bools indicating extended fingers for each hand.
+        Returns:
+            Total count of extended fingers.
+        """
         if extended_fingers is None:
             return 0
         #Normailze to list of lists
@@ -360,6 +376,3 @@ class HandAnalyzer:
             extended_fingers = [extended_fingers]
         num_extended = sum(1 for hand in extended_fingers for extended in hand if extended)
         return num_extended
-
-
-
