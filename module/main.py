@@ -1,7 +1,7 @@
 import os
 import cv2
 import time
-from module import HandAnalyzer
+from hand_analyzer import HandAnalyzer
 
 BASE_PATH = os.path.dirname(os.path.abspath(__file__))
 MODEL_PATH = os.path.join(BASE_PATH,"..","Models", "hand_landmarker.task")
